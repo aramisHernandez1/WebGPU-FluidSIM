@@ -35,22 +35,74 @@ async function main() {
     alphaMode: "opaque",
   });
 
+  const quadVertices = new Float32Array([
+    // x,  y
+    -0.5, -0.5,
+     0.5, -0.5,
+     0.5,  0.5,
+    
+    -0.5, -0.5,
+     0.5, 0.5,
+    -0.5, 0.5
+  ]);
+
+  const vertexBuffer = device.createBuffer({
+    size: quadVertices.byteLength,
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    mappedAtCreation: true,
+  });
+  new Float32Array(vertexBuffer.getMappedRange()).set(quadVertices);
+  vertexBuffer.unmap();
+
+  const NUM_INSTANCES = 100;
+
+  // Per instance: offsetX, offsetY, r, g, b (5 floats = 20 bytes each)
+  const instanceData = new Float32Array(NUM_INSTANCES * 5);
+
+  for (let i = 0; i < NUM_INSTANCES; i++){
+    const base = i * 5;
+    instanceData[base + 0] = (Math.random() * 2 - 1) * 0.9; // offsetX
+    instanceData[base + 1] = (Math.random() * 2 - 1) * 0.9; // offsetY
+    instanceData[base + 2] = Math.random();
+    instanceData[base + 3] = Math.random();
+    instanceData[base + 4] = Math.random();
+  }
+
+  const instanceBuffer = device.createBuffer({
+    size: instanceData.byteLength,
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    mappedAtCreation: true,
+  });
+  new Float32Array(instanceBuffer.getMappedRange()).set(instanceData);
+  instanceBuffer.unmap();
+
+
   // Shader and Pipeline setup
   const shaderModule = device.createShaderModule({
     code: `
+      struct VertexInput {
+        @location(0) position: vec2f,  //from quad geometry buffer
+        @location(1) instanceOffset: vec2f, // from instance buffer
+        @location(2) instanceColor: vec3f, // from instance buffer
+      };
+
+      struct VertexOutput {
+        @builtin(position) position: vec4f,
+        @location(0) color: vec3f
+      }
+
       @vertex
-      fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
-        var pos = array<vec2f, 3>(
-          vec2f( 0.0,  0.5),
-          vec2f(-0.5, -0.5),
-          vec2f( 0.5, -0.5)
-        );
-        return vec4f(pos[i], 0.0, 1.0);
+      fn vs_main(in: VertexInput) -> VertexOutput {
+        var out: VertexOutput; 
+        let scale = 0.05; // shrink quad down so they all fit on the screen
+        out.position = vec4f(in.position * scale + in.instanceOffset, 0.0, 1.0);
+        out.color = in.instanceColor;
+        return out;
       }
 
       @fragment
-      fn fs_main() -> @location(0) vec4f {
-        return vec4f(1.0, 0.5, 0.2, 1.0);
+      fn fs_main(in: VertexOutput) -> @location(0) vec4f {
+        return vec4f(in.color, 1.0);
       }
     `,
   });
@@ -60,6 +112,27 @@ async function main() {
     vertex: {
       module: shaderModule,
       entryPoint: "vs_main",
+
+      buffers: [
+        // Slot 0: quad geometry
+        {
+          arrayStride: 2 * 4, //2 floats * 4 bytes
+          stepMode: "vertex",
+          attributes: [
+            {shaderLocation: 0, offset: 0, format: "float32x2"}, //position
+          ],
+        },
+
+        // Slot 1: per-instance data - advances per instance
+        {
+          arrayStride: 5 * 4, // 5 Floats * 4 bytes
+          stepMode: "instance",
+          attributes: [
+            { shaderLocation: 1, offset: 0,     format: "float32x2"}, //offset
+            { shaderLocation: 2, offset: 2 * 4, format: "float32x3"}, //color
+          ],
+        },
+      ],
     },
     fragment: {
       module: shaderModule,
@@ -89,7 +162,9 @@ async function main() {
     });
 
     pass.setPipeline(pipeline);
-    pass.draw(3);
+    pass.setVertexBuffer(0, vertexBuffer);
+    pass.setVertexBuffer(1, instanceBuffer);
+    pass.draw(6, NUM_INSTANCES);
 
     pass.end();
 
